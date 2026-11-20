@@ -106,7 +106,7 @@
   var AFR = /^en[-_](ZA|NG|KE|GH|TZ|UG|ZW|ZM|BW|NA)/i;
   var Voice = {
     ok: 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window,
-    voices: [], q: [], i: 0, state: 'idle', title: '', persona: 'reader', mode: 'tts', audio: null, onseg: null, onstate: [], timer: 0, token: 0, err: '',
+    voices: [], q: [], i: 0, state: 'idle', title: '', persona: 'reader', mode: 'tts', audio: null, onseg: null, onstate: [], timer: 0, token: 0, err: '', bad: {}, tries: 0, u: null,
     init: function () {
       if (!Voice.ok) return; var go = function () { Voice.voices = speechSynthesis.getVoices() || []; Voice.emit(); };
       go(); if (speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', go); else speechSynthesis.onvoiceschanged = go;
@@ -117,11 +117,11 @@
       if (/^en/i.test(v.lang)) s += 10;
       if (a === 'african' && AFR.test(v.lang)) s += 12; else if (a === 'gb' && /^en[-_]GB/i.test(v.lang)) s += 12; else if (a === 'us' && /^en[-_]US/i.test(v.lang)) s += 12; else if (a === 'au' && /^en[-_]AU/i.test(v.lang)) s += 12;
       else if (a === 'auto' && AFR.test(v.lang)) s += 3;
-      if (/natural|neural|online|premium|enhanced|studio|wavenet/i.test(n)) s += 8; if (/google/i.test(n)) s += 3; if (/espeak|compact/i.test(n)) s -= 6; if (v.localService === false) s += 1;
+      var isNet = v.localService === false || /online|wavenet|google/i.test(n); if (/natural|neural|premium|enhanced|studio/i.test(n)) s += (isNet && navigator.onLine === false) ? -20 : 6; if (v.localService === true) s += 5; if (isNet && navigator.onLine === false) s -= 30; if (/espeak|compact/i.test(n)) s -= 3; if (Voice.bad[v.voiceURI || v.name]) s -= 100;
       return s;
     },
     pick: function (persona) {
-      var want = Store.s.prefs.voices[persona]; if (want) { var m = Voice.voices.filter(function (v) { return v.voiceURI === want; })[0]; if (m) return m; }
+      var want = Store.s.prefs.voices[persona]; if (want) { var m = Voice.voices.filter(function (v) { return v.voiceURI === want; })[0]; if (m && !Voice.bad[m.voiceURI || m.name]) return m; }
       var list = Voice.english().slice().sort(function (a, b) { return Voice.score(b) - Voice.score(a); }); return list[0] || null;
     },
     quality: function () { var v = Voice.pick(Voice.persona); if (!v) return 'none'; return /natural|neural|online|premium|enhanced|wavenet|studio/i.test(v.name) ? 'neural' : 'basic'; },
@@ -130,7 +130,7 @@
     /* segments: [{id,text}] */
     play: function (title, segments, opt) {
       opt = opt || {}; Voice.stop(true);
-      var url = opt.url; Voice.title = title; Voice.persona = opt.persona || 'reader'; Voice.onseg = opt.onseg || null; Voice.err = '';
+      var url = opt.url; Voice.title = title; Voice.persona = opt.persona || 'reader'; Voice.onseg = opt.onseg || null; Voice.err = ''; Voice.tries = 0;
       if (url) { Voice.mode = 'url'; var a = Voice.audio = new Audio(url); a.playbackRate = Store.s.prefs.rate; a.addEventListener('ended', function () { Voice.set('idle'); if (opt.onend) opt.onend(); }); a.addEventListener('timeupdate', Voice.emit); a.addEventListener('error', function () { Voice.err = 'The audio file could not be loaded.'; Voice.set('idle'); }); a.play().then(function () { Voice.set('playing'); }).catch(function () { Voice.err = 'Playback was blocked or the file is missing.'; Voice.set('idle'); }); Voice.media(); Voice.log(title); return true; }
       if (!Voice.ok) { Voice.err = 'This browser has no speech synthesis. Try Chrome, Edge, Safari or Firefox, or add recorded audio (see README).'; Voice.set('idle'); return false; }
       Voice.mode = 'tts'; Voice.q = []; segments.forEach(function (s) { chunk(s.text).forEach(function (c, k) { Voice.q.push({ id: s.id, text: c, first: k === 0 }); }); });
@@ -139,12 +139,25 @@
     speak: function () {
       clearTimeout(Voice.timer); var my = ++Voice.token;
       if (Voice.i >= Voice.q.length) { Voice.set('idle'); if (Voice.onseg) Voice.onseg(null); if (Voice.onend) Voice.onend(); return; }
-      var seg = Voice.q[Voice.i], P = PERSONAS[Voice.persona] || PERSONAS.guide, u = new SpeechSynthesisUtterance(pron(seg.text)), v = Voice.pick(Voice.persona);
-      if (v) { u.voice = v; u.lang = v.lang; } u.rate = Math.max(.5, Math.min(2, P.rate * Store.s.prefs.rate)); u.pitch = P.pitch;
-      u.onstart = function () { if (my !== Voice.token) return; Voice.set('playing'); if (Voice.onseg) Voice.onseg(seg.id); };
-      u.onend = function () { if (my !== Voice.token || Voice.state === 'paused') return; Voice.i++; var last = Voice.q[Voice.i]; var gap = (last && last.first) ? P.pause : 120; Voice.timer = setTimeout(function () { if (my === Voice.token) Voice.speak(); }, gap); };
-      u.onerror = function (e) { if (my !== Voice.token) return; if (e.error === 'canceled' || e.error === 'interrupted') return; Voice.err = 'Speech failed (' + e.error + '). Check the device voice settings.'; Voice.set('idle'); };
-      try { speechSynthesis.cancel(); speechSynthesis.speak(u); Voice.set('playing'); } catch (e) { Voice.err = 'Speech could not start.'; Voice.set('idle'); }
+      var seg = Voice.q[Voice.i], P = PERSONAS[Voice.persona] || PERSONAS.guide, u = new SpeechSynthesisUtterance(pron(seg.text)), v = Voice.tries >= 2 ? null : Voice.pick(Voice.persona);
+      if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en'; } u.rate = Math.max(.5, Math.min(2, P.rate * Store.s.prefs.rate)); u.pitch = P.pitch; u.volume = 1;
+      var started = false;
+      u.onstart = function () { if (my !== Voice.token) return; started = true; Voice.tries = 0; Voice.set('playing'); if (Voice.onseg) Voice.onseg(seg.id); };
+      u.onend = function () { if (my !== Voice.token || Voice.state === 'paused') return; Voice.tries = 0; Voice.i++; var last = Voice.q[Voice.i]; var gap = (last && last.first) ? P.pause : 120; Voice.timer = setTimeout(function () { if (my === Voice.token) Voice.speak(); }, gap); };
+      u.onerror = function (e) {
+        if (my !== Voice.token) return; if (e.error === 'canceled' || e.error === 'interrupted') return;
+        /* Voice failed: blacklist it, then retry with another voice, then with the device default voice. */
+        if (v) Voice.bad[v.voiceURI || v.name] = 1;
+        if (Voice.tries < 3) { Voice.tries++; Voice.timer = setTimeout(function () { if (my === Voice.token) Voice.speak(); }, 150); return; }
+        Voice.tries = 0; Voice.err = 'Speech failed (' + e.error + '). In your device settings, install or enable a text-to-speech voice, then try again.'; Voice.set('idle');
+      };
+      /* Chrome/Android drop an utterance spoken right after cancel(); wait a beat, and keep a reference so it is not garbage-collected mid-speech. */
+      Voice.u = u;
+      var fire = function () { if (my !== Voice.token) return; try { if (speechSynthesis.paused) speechSynthesis.resume(); speechSynthesis.speak(u); } catch (e) { Voice.err = 'Speech could not start.'; Voice.set('idle'); } };
+      try { speechSynthesis.cancel(); } catch (e) { }
+      Voice.set('playing'); setTimeout(fire, 80);
+      /* Watchdog: if nothing started in 6s, treat it as a failed voice and fall back. */
+      setTimeout(function () { if (my === Voice.token && !started && Voice.state === 'playing' && !speechSynthesis.speaking) u.onerror({ error: 'no-start' }); }, 6000);
     },
     pause: function () { if (Voice.mode === 'url' && Voice.audio) { Voice.audio.pause(); Voice.set('paused'); return; } if (Voice.state !== 'playing') return; Voice.token++; clearTimeout(Voice.timer); try { speechSynthesis.cancel(); } catch (e) { } Voice.set('paused'); },
     resume: function () { if (Voice.mode === 'url' && Voice.audio) { Voice.audio.play(); Voice.set('playing'); return; } if (Voice.state === 'paused') { Voice.speak(); } },

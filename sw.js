@@ -1,5 +1,5 @@
 /* Doctor Orison service worker: offline shell. Bump VERSION when files change. */
-var VERSION = 'orison-v1';
+var VERSION = 'orison-v2';
 var SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'data-books.js', 'data-prayers.js', 'data-ingredients.js', 'art.js', 'core.js', 'app.js', 'views-bible.js', 'views-prayer.js', 'views-archive.js', 'cms.js', 'start.js', 'manifest.webmanifest', 'orison-icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
 self.addEventListener('activate', function (e) { e.waitUntil(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k !== VERSION; }).map(function (k) { return caches.delete(k); })); }).then(function () { return self.clients.claim(); })); });
